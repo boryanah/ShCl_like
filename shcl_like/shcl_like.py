@@ -17,6 +17,8 @@ class ShClLike(Likelihood):
     ia_model: str = "IANone"
     # N(z) model name
     nz_model: str = "NzNone"
+    # b(z) model name
+    bz_model: str = "BzNone"
     # P(k) model name
     pk_model: str = "PkDefault"
     # List of bin names
@@ -32,6 +34,16 @@ class ShClLike(Likelihood):
         # Ell sampling for interpolation
         self._get_ell_sampling()
 
+    def get_suffix_for_tr(self, tr):
+        # B.H. Get name of the power spectra in the sacc file
+        if ('gc' in tr) or ('cv' in tr):
+            return '0'
+        elif ('wl' in tr) or ('bin' in tr):
+            return 'e'
+        else:
+            raise ValueError('dtype not found for tracer {}'.format(tr))
+
+        
     def _read_data(self):
         # Reads sacc file
         # Selects relevant data.
@@ -41,6 +53,7 @@ class ShClLike(Likelihood):
         import sacc
         s = sacc.Sacc.load_fits(self.input_file)
         self.bin_properties = {}
+        # B.H. change in the param files to match the names of the tracers
         for b in self.bins:
             if b['name'] not in s.tracers:
                 raise LoggedError(self.log, "Unknown tracer %s" % b['name'])
@@ -52,7 +65,10 @@ class ShClLike(Likelihood):
         for cl in self.twopoints:
             lmin = cl.get('lmin', self.defaults.get('lmin', 2))
             lmax = cl.get('lmax', self.defaults.get('lmax', 1E30))
-            ind = s.indices('cl_ee', (cl['bins'][0], cl['bins'][1]),
+            # B.H. get the dtype for both tracers
+            cl_name1 = self.get_suffix_for_tr(cl['bins'][0])
+            cl_name2 = self.get_suffix_for_tr(cl['bins'][1])
+            ind = s.indices('cl_%s%s' % (cl_name1, cl_name2), (cl['bins'][0], cl['bins'][1]),
                             ell__gt=lmin, ell__lt=lmax)
             indices += list(ind)
         s.keep_indices(np.array(indices))
@@ -64,7 +80,10 @@ class ShClLike(Likelihood):
         self.l_min_sample = 1E30
         self.l_max_sample = -1E30
         for cl in self.twopoints:
-            l, c_ell, cov, ind = s.get_ell_cl('cl_ee',
+            # B.H. get the dtype for both tracers
+            cl_name1 = self.get_suffix_for_tr(cl['bins'][0])
+            cl_name2 = self.get_suffix_for_tr(cl['bins'][1])
+            l, c_ell, cov, ind = s.get_ell_cl('cl_%s%s' % (cl_name1, cl_name2),
                                               cl['bins'][0],
                                               cl['bins'][1],
                                               return_cov=True,
@@ -140,8 +159,21 @@ class ShClLike(Likelihood):
             raise LoggedError(self.log, "Unknown Nz model %s" % self.nz_model)
         return (z, nz)
 
+    def _get_bz(self, cosmo, name, **pars):
+        # Get b(z) for tracer with name `name`
+        z = self.bin_properties[name]['z_fid']
+        bz = np.ones_like(z)
+        if self.bz_model == 'Linear':
+            b0 = pars[self.input_params_prefix + '_' + name + '_b0']
+            bz *= b0
+            # B.H. this is where you include other models like HEFT
+        elif self.bz_model != 'BzNone':
+            raise LoggedError(self.log, "Unknown Bz model %s" % self.bz_model)
+        return (z, bz)
+
     def _get_ia_bias(self, cosmo, name, **pars):
         # Get an IA amplitude for tracer with name `name`
+        # B.H. different parametrizations of the intrinsic alignment model 
         if self.ia_model == 'IANone':
             return None
         else:
@@ -160,13 +192,22 @@ class ShClLike(Likelihood):
 
     def _get_tracer(self, cosmo, name, **pars):
         # Get CCL tracer for tracer with name `name`
-        nz = self._get_nz(cosmo, name, **pars)
-        ia = self._get_ia_bias(cosmo, name, **pars)
-        t = ccl.WeakLensingTracer(cosmo, nz, ia_bias=ia)
+        if 'cv' not in name:
+            nz = self._get_nz(cosmo, name, **pars)
+        if 'gc' in name:
+            bz = self._get_bz(cosmo, name, **pars)
+            t = ccl.NumberCountsTracer(cosmo, dndz=nz, bias=bz, has_rsd=False)
+        elif 'wl' in name:
+            ia = self._get_ia_bias(cosmo, name, **pars)
+            t = ccl.WeakLensingTracer(cosmo, nz, ia_bias=ia)
+        elif 'cv' in name:
+            # B.H. pass z_source as parameter to the YAML file
+            t = ccl.CMBLensingTracer(cosmo, z_source=1100)
         return t
 
     def _get_pk(self, cosmo):
         # Get P(k) to integrate over
+        # B.H. what model are we using for the power spectrum (def is halofit, HM is halo model)
         if self.pk_model == 'PkDefault':
             return None
         elif self.pk_model == 'PkHModel':
@@ -207,8 +248,14 @@ class ShClLike(Likelihood):
         cls = self._get_cl_wl(cosmo, pk, **pars)
         cl_out = np.zeros(self.ndata)
         for clm, cl in zip(self.cl_meta, cls):
-            m1 = pars[self.input_params_prefix + '_' + clm['bin_1'] + '_m']
-            m2 = pars[self.input_params_prefix + '_' + clm['bin_2'] + '_m']
+            if 'wl' in clm['bin_1']:
+                m1 = pars[self.input_params_prefix + '_' + clm['bin_1'] + '_m']
+            else:
+                m1 = 0.
+            if 'wl' in clm['bin_2']:
+                m2 = pars[self.input_params_prefix + '_' + clm['bin_2'] + '_m']
+            else:
+                m2 = 0.
             prefac = (1+m1) * (1+m2)
             cl_out[clm['inds']] = cl * prefac
         return cl_out
@@ -217,6 +264,7 @@ class ShClLike(Likelihood):
         # By selecting `self._get_pk` as a `method` of CCL here,
         # we make sure that this function is only run when the
         # cosmological parameters vary.
+        # B.H. this makes things faster
         return {'CCL': {'methods': {'pk': self._get_pk}}}
 
     def logp(self, **pars):
