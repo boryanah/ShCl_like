@@ -63,8 +63,10 @@ class ShClLike(Likelihood):
 
         indices = []
         for cl in self.twopoints:
-            lmin = cl.get('lmin', self.defaults.get('lmin', 2))
-            lmax = cl.get('lmax', self.defaults.get('lmax', 1E30))
+            #lmin = cl.get('lmin', self.defaults.get('lmin', 2))
+            #lmax = cl.get('lmax', self.defaults.get('lmax', 1E30))
+            lmin = np.min([self.defaults[cl['bins'][0]].get('lmin', 2), self.defaults[cl['bins'][1]].get('lmin', 2)])
+            lmax = np.min([self.defaults[cl['bins'][0]].get('lmax', 1E30), self.defaults[cl['bins'][1]].get('lmax', 1E30)])
             # B.H. get the dtype for both tracers
             cl_name1 = self.get_suffix_for_tr(cl['bins'][0])
             cl_name2 = self.get_suffix_for_tr(cl['bins'][1])
